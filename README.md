@@ -20,7 +20,7 @@ On a managed Mac, use the software installation and permissions route approved b
 3. The installer downloads an isolated Python 3.12 runtime, pinned packages and the pinned speech model, checks the model checksum and builds `~/Applications/Bucky.app`. Allow several GB of disk space and internet access for installation.
 4. Open `~/Applications/Bucky.app` and grant Microphone and Accessibility. Configure your shortcut and, if wanted, enable startup at login in Settings.
 
-Keep the source folder in place: the app runs its engine from that folder. After moving it, quit Bucky and run `bash scripts/build.sh` again. macOS may require renewed permissions after rebuilding. The build records the path of the clone on the installing Mac in the locally built app; no prebuilt app or originating device path is distributed here. Each Mac has its own settings and history.
+Keep the source folder in place: the app runs its engine from that folder. After moving it, quit Bucky and deliberately rebuild with `BUCKY_REPLACE_APP=1 bash scripts/build.sh`. macOS may require renewed permissions after rebuilding. The build records the path of the clone on the installing Mac in the locally built app; no prebuilt app or originating device path is distributed here. Each Mac has its own settings and history.
 
 ## Build troubleshooting
 
@@ -36,12 +36,23 @@ This selects an installed SDK for this command; it does not change the system to
 
 - **Dictate:** click the microphone or use your shortcut. Press again to finish. There is no automatic recording time limit. Escape, quitting and sleep cancel recording.
 - **History:** search, read, copy or delete transcripts. Individual deletion has Undo; deleting all requires confirmation.
-- **Vocabulary:** add one `heard words = preferred spelling` replacement per line. The public default contains only `super whisper = Superwhisper`.
+- **Vocabulary:** edit spelling replacements or import UTF-8 CSV, TSV or text. A preview shows new and duplicate entries before adding them. Existing entries stay unchanged. The public default contains only `super whisper = Superwhisper`.
+- **Snippets:** save distinctive spoken triggers for literal text, including several lines. Matching ignores case and respects whole phrases. Snippets take precedence over an identical vocabulary rule.
 - **Settings:** permissions, keyboard/mouse shortcuts, hold-to-talk, recording sounds, startup at login, automatic paste and history controls.
 
 The default shortcut is Control-Space; Control-Option-Space is a backup. A recorded user shortcut takes precedence. Side and middle mouse buttons can be captured; primary and secondary clicks are excluded. Quit another dictation app using the same shortcut before testing.
 
 Automatic paste targets the original app only if it remains foreground. Bucky never presses Return. Changing fields within that app changes the paste destination. Otherwise, paste from the clipboard manually. An emitted paste keystroke does not guarantee insertion.
+
+## New in 0.3
+
+- **Clipboard restoration:** automatic paste restores the previous available clipboard representations after a short hold: normally 1.5 seconds, Word/Outlook 3 seconds, recognized remote clients 5 seconds. Restoration is skipped if you copied something new, or if a complete supported snapshot exceeds 16 MB/128 items. Explicit Copy and manual-paste fallback keep the transcript on the clipboard. Turn restoration off in Settings if wanted. Slow applications may still need manual paste.
+- **Paste last dictation:** press Control–Command–V in the destination app to repeat the latest available result, even with automatic paste disabled. Settings reports shortcut conflicts. Clicking Paste last inside Bucky copies the text; it does not activate another application or press Return. With history saving off, a result survives only for the current app session.
+- **Vocabulary import:** up to 1 MB/5,000 entries, one term or two columns (heard/preferred) per row. CSV quoting, TSV and plain `heard = preferred` lines are supported. Each field is single-line and at most 512 characters. Existing entries and duplicates are kept/skipped, with confirmation before additions. This replaces text after recognition; it does not train the speech model.
+- **Snippets:** manage up to 200 enabled/disabled snippets with a trigger of at most 100 characters and text of at most 10,000 characters. Inserted text is literal and is not expanded recursively. Settings and snippets remain in local app preferences.
+- **Long recordings:** completed 30-second PCM windows are processed locally while recording continues, with the original 3-second overlap. After stop, matching verified results are reused and the remaining tail is processed. Intermediate results stay in RAM. No extra audio copies or on-disk transcript cache are written. Unsupported/invalidated inputs use ordinary batch processing. This moves computation into recording time and does not promise lower total CPU/battery usage. Text is delivered only after explicit stop; there is no silence-based automatic stop.
+
+Command–1/2/3/4 retain Dictate/History/Vocabulary/Settings. Command–5 opens Snippets.
 
 ## Local data and permissions
 
@@ -56,11 +67,13 @@ The repository includes no recordings, personal transcripts, settings, runtime, 
 ## Source and checks
 
 - `Sources/`: native SwiftUI/AppKit app, local history and shortcuts.
-- `worker.py`: local Parakeet MLX speech worker over stdio.
+- `worker.py` and `progressive.py`: local Parakeet MLX speech worker and verified in-memory reuse of completed windows.
 - `scripts/install.sh` and `scripts/build.sh`: installation and native build.
 - `tests/`: synthetic test code only, with no personal recordings or transcripts.
 
-Native build/signature and focused history, shortcut and simulated recording-timer checks are performed for this snapshot. Synthetic checks do not establish real microphone, target-app paste, physical mouse or fresh-install behavior on a second Mac. This app is ad-hoc signed locally; it is not a notarized installer.
+The build refuses to replace an existing app unless `BUCKY_REPLACE_APP=1` is explicit. Use a fresh `BUCKY_APP_PATH` for isolated validation. UI previews additionally require `BUCKY_UI_TESTING=1`; they use a separate bundle identifier and labelled synthetic data. Never install a preview as the production app. If Command Line Tools point at an incompatible SDK, use `SDKROOT` to select a compatible installed SDK before building.
+
+Checks include native build/signature; text import, Unicode/whole-phrase expansion and snippet persistence; an isolated named pasteboard for clipboard races and rich-text preservation; history and shortcuts; and the simulated recording timer. Speech checks use synthetic audio with `tests/smoke.py`; `tests/progressive.py` compares growing-WAV results with batch processing, and `tests/progressive_safety.py` checks cancellation, identity and container handling. `tests/progressive.py --seconds 330 --realtime` writes a synthetic recording at recording speed for a long latency check. Synthetic checks do not establish real microphone, target-app paste, physical mouse or fresh-install behavior on a second Mac. This app is ad-hoc signed locally; it is not a notarized installer.
 
 ## Attribution
 

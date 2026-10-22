@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import AVFoundation
 import Carbon
+import UniformTypeIdentifiers
 
 // Written by build.sh for this clone; no dependency on another Mac's username.
 let projectRoot = Bundle.main.object(forInfoDictionaryKey: "BuckyProjectRoot") as? String
@@ -27,7 +28,44 @@ final class VoiceState: ObservableObject {
     let historyStore = HistoryStore()
     #endif
     var historyWritable = true
+    @Published var preserveClipboard = UserDefaults.standard.object(forKey: "preserveClipboard") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(preserveClipboard, forKey: "preserveClipboard") }
+    }
+    @Published var pasteLastShortcutStatus = "⌃ ⌘ V · paste last dictation"
+    @Published var importPreview: VocabularyImport?
+    @Published var vocabularyMessage = ""
+    @Published var snippetsError = ""
+    var snippetsWritable = true
+    @Published var snippets: [Snippet] = [] {
+        didSet {
+            guard snippetsWritable, let data = try? JSONEncoder().encode(snippets) else { return }
+            UserDefaults.standard.set(data, forKey: "snippets")
+        }
+    }
+    func saveSnippet(_ draft: Snippet) -> Bool {
+        guard snippetsWritable else { return false }
+        var snippet = draft
+        snippet.trigger = snippet.trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try snippet.validate(among: snippets)
+            if let index = snippets.firstIndex(where: { $0.id == snippet.id }) { snippets[index] = snippet }
+            else { snippets.append(snippet) }
+            snippetsError = ""; return true
+        } catch { snippetsError = error.localizedDescription; return false }
+    }
+    var latestText: String? { lastResult?.text ?? history.first?.text }
     init() {
+        if let data = UserDefaults.standard.data(forKey: "snippets") {
+            do {
+                let saved = try JSONDecoder().decode([Snippet].self, from: data)
+                guard saved.count <= 200, Set(saved.map(\.id)).count == saved.count else { throw TextToolsError.tooManySnippets }
+                for snippet in saved { try snippet.validate(among: saved) }
+                snippets = saved
+            } catch {
+                snippetsWritable = false
+                snippetsError = "Snippets could not be read. The saved data has been left untouched."
+            }
+        }
         do { history = try historyStore.load(); if FileManager.default.fileExists(atPath: historyStore.url.path) { try historyStore.save(history) } }
         catch { historyWritable = false; historyError = "History could not be read. Your saved file has been left untouched. " + error.localizedDescription }
         #if UI_TESTING
@@ -79,6 +117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var watchdog: Timer?
     let shortcuts = ShortcutManager()
     var cancelKey: EventHotKeyRef?
+    var pasteLastKey: EventHotKeyRef?
+    let clipboard = ClipboardDelivery()
     var target: NSRunningApplication?
     var pendingID: String?
     var started = Date()
@@ -149,8 +189,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let event, let context else { return noErr }
             var id = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
-            guard id.signature == 0x5350524B && id.id == 2 else { return OSStatus(eventNotHandledErr) }
-            Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue().cancel()
+            guard id.signature == 0x5350524B else { return OSStatus(eventNotHandledErr) }
+            let controller = Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue()
+            if id.id == 2 { controller.cancel() }
+            else if id.id == 3 { controller.pasteLast() }
+            else { return OSStatus(eventNotHandledErr) }
             return noErr
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
         shortcuts.onPress = { [weak self] in
@@ -165,6 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.state.shortcutLabel = label
             self?.state.shortcutStatus = status
             self?.state.capturingShortcut = capturing
+            self?.configurePasteLastShortcut()
         }
         shortcuts.start()
     }
@@ -287,17 +331,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     func applyGlossary(_ text: String) -> String {
-        var result = text
-        for line in state.glossary.split(separator: "\n") {
-            let pair = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-            if pair.count == 2 && !pair[0].isEmpty {
-                let pattern = "(?i)(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: pair[0]) + "(?![\\p{L}\\p{N}])"
-                if let regex = try? NSRegularExpression(pattern: pattern) {
-                    result = regex.stringByReplacingMatches(in: result, range: NSRange(result.startIndex..., in: result), withTemplate: NSRegularExpression.escapedTemplate(for: pair[1]))
-                }
-            }
+        TextExpansion.apply(text, vocabulary: state.glossary, snippets: state.snippets)
+    }
+    func configurePasteLastShortcut() {
+        if let pasteLastKey { UnregisterEventHotKey(pasteLastKey); self.pasteLastKey = nil }
+        guard !shortcuts.capturing else { return }
+        if shortcuts.binding.kind == "key", shortcuts.binding.code == 9,
+           shortcuts.binding.modifiers == UInt32(controlKey | cmdKey) {
+            state.pasteLastShortcutStatus = "⌃ ⌘ V is your dictation shortcut. Choose another dictation shortcut to enable Paste last."
+            return
         }
-        return result
+        let result = RegisterEventHotKey(9, UInt32(controlKey | cmdKey), EventHotKeyID(signature: 0x5350524B, id: 3), GetApplicationEventTarget(), 0, &pasteLastKey)
+        state.pasteLastShortcutStatus = result == noErr ? "⌃ ⌘ V · paste last dictation" : "⌃ ⌘ V is in use by another app. Copy the latest dictation from Bucky instead."
+    }
+    func pasteLast() {
+        guard !state.recording, !state.busy, !shortcuts.capturing else { return }
+        guard let text = state.latestText, !text.isEmpty else {
+            state.detail = "No dictation is available yet."; return
+        }
+        let current = NSWorkspace.shared.frontmostApplication
+        deliver(text, to: current, explicitlyRequested: true)
+    }
+    func importVocabulary() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.commaSeparatedText, .tabSeparatedText, .plainText]
+        panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        panel.prompt = "Preview import"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            do {
+                self.state.importPreview = try VocabularyImport.read(url, existing: self.state.glossary)
+                self.state.vocabularyMessage = ""
+            } catch { self.state.vocabularyMessage = error.localizedDescription }
+        }
     }
     func toggle() {
         if state.recording { stop(); return }
@@ -366,23 +432,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordingURL = nil
     }
     func copy(_ text: String) {
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+        if !clipboard.copy(text) { state.detail = "Could not write to the clipboard. Please try again." }
     }
-    func deliver(_ text: String) {
-        copy(text)
-        guard state.autoPaste, AXIsProcessTrusted(), let target,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier else {
-            state.detail = "Copied. Press ⌘V where you want your text."; return
+    func deliver(_ text: String) { deliver(text, to: target, explicitlyRequested: false) }
+    func deliver(_ text: String, to destination: NSRunningApplication?, explicitlyRequested: Bool) {
+        guard (state.autoPaste || explicitlyRequested), AXIsProcessTrusted(), let destination,
+              destination.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == destination.processIdentifier else {
+            copy(text)
+            state.detail = "Copied. Switch to your app and press ⌘V, or use ⌃⌘V for the latest dictation."
+            return
         }
-        // Never activate another application or press Return; paste only to the still-current app.
         let source = CGEventSource(stateID: .combinedSessionState)
-        let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true)
-        let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
-        down?.flags = .maskCommand; up?.flags = .maskCommand
-        down?.post(tap: .cghidEventTap); up?.post(tap: .cghidEventTap)
-        state.detail = "Paste sent to \(target.localizedName ?? "your app"). Text is also on your clipboard."
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
+            copy(text); state.detail = "Copied. Press ⌘V where you want the text."; return
+        }
+        guard clipboard.stagePaste(text, preserve: state.preserveClipboard) else {
+            state.detail = "Clipboard changed while preparing the paste. Your new copy was kept; try ⌃⌘V again."; return
+        }
+        // Never activate another application or press Return.
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == destination.processIdentifier else {
+            clipboard.restorePending()
+            state.detail = "The app changed. Use ⌃⌘V in the app where you want the latest dictation."; return
+        }
+        down.flags = .maskCommand; up.flags = .maskCommand
+        down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+        let restoring = clipboard.restorationPending
+        clipboard.scheduleRestore(after: ClipboardDelivery.holdDuration(for: destination.bundleIdentifier))
+        state.detail = restoring ? "Paste sent to \(destination.localizedName ?? "your app"). Your earlier clipboard will return; ⌃⌘V pastes this dictation again." : "Paste sent to \(destination.localizedName ?? "your app"). The dictation is on your clipboard."
     }
     func applicationWillTerminate(_ notification: Notification) {
+        clipboard.restorePending()
         quitting = true; cancel(); worker?.terminationHandler = nil; worker?.terminate()
     }
 }

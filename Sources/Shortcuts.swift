@@ -14,6 +14,8 @@ struct InputBinding: Codable, Equatable {
         for (flag, carbon, glyph) in [(CGEventFlags.maskControl, controlKey, "⌃"), (.maskAlternate, optionKey, "⌥"), (.maskShift, shiftKey, "⇧"), (.maskCommand, cmdKey, "⌘")] {
             if flags.contains(flag) { modifiers |= UInt32(carbon); title += glyph + " " }
         }
+        // Reserved for pasting the last dictation; never replace the recording binding with it.
+        if code == 9 && modifiers == UInt32(controlKey | cmdKey) { return nil }
         let functionKeys: [UInt32: String] = [122:"F1",120:"F2",99:"F3",118:"F4",96:"F5",97:"F6",98:"F7",100:"F8",101:"F9",109:"F10",103:"F11",111:"F12",105:"F13",107:"F14",113:"F15",106:"F16",64:"F17",79:"F18",80:"F19",90:"F20"]
         guard modifiers & UInt32(controlKey | optionKey | cmdKey) != 0 || functionKeys[code] != nil else { return nil }
         let names: [UInt32:String] = [49:"Space",36:"Return",48:"Tab",51:"Delete",123:"←",124:"→",125:"↓",126:"↑"]
@@ -137,6 +139,9 @@ final class ShortcutManager {
             if type == .keyDown {
                 let code = UInt32(event.getIntegerValueField(.keyboardEventKeycode))
                 if code == 53 { cancelCapture(); return true }
+                if code == 9, event.flags.intersection([.maskControl, .maskAlternate, .maskShift, .maskCommand]) == [.maskControl, .maskCommand] {
+                    status = "Control–Command–V is reserved for Paste last dictation."; publish(); return true
+                }
                 if let value = InputBinding.fromKey(code:code, flags:event.flags, characters:NSEvent(cgEvent:event)?.charactersIgnoringModifiers) { finishCapture(value) }
                 else { status = "Use Control, Option or Command with a key, an F-key, or a side/middle mouse button."; publish() }
                 return true

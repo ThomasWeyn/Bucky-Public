@@ -21,7 +21,8 @@ for name in ('dutch','english'):
     clips.append(audio)
 sf.write(ROOT/'tests/mixed.wav',np.concatenate([clips[0],np.zeros(8000),clips[1]]),16000)
 sf.write(ROOT/'tests/silence.wav',np.zeros(32000),16000)
-p=subprocess.Popen([str(ROOT/'.venv/bin/python'),'-u','worker.py'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1)
+scratch = tempfile.TemporaryDirectory(prefix='bucky-smoke-worker-')
+p=subprocess.Popen([str(ROOT/'.venv/bin/python'),'-u','worker.py'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,env={**os.environ,'TMPDIR':scratch.name})
 def receive(timeout=120):
     selector=selectors.DefaultSelector(); selector.register(p.stdout,selectors.EVENT_READ)
     try:
@@ -61,3 +62,4 @@ try:
     (ROOT/'tests/results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2))
 finally:
     p.stdin.close();p.wait(timeout=10)
+    scratch.cleanup()

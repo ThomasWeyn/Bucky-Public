@@ -18,4 +18,5 @@ var presses = 0; var releases = 0
 manager.onPress = { presses += 1 }; manager.onRelease = { releases += 1 }
 manager.press(); manager.press(); manager.release(); manager.release()
 check(presses == 1 && releases == 1,"Repeated down/up events must not double-toggle")
-print("11 shortcut checks passed: keyboard, mouse, persistence, press/release deduplication")
+check(InputBinding.fromKey(code:9,flags:[.maskCommand,.maskControl],characters:"v") == nil,"Paste last shortcut is reserved")
+print("12 shortcut checks passed: keyboard, mouse, persistence, press/release deduplication")
