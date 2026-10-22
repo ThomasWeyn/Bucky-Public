@@ -1,0 +1,40 @@
+.venv/
+.runtime/
+.bin/
+model/
+__pycache__/
+*.wav
+*.aiff
+.DS_Store
+.previous-build/
+tests/*/check
+tests/*.app/
+tests/ui-history.json
+
+# Personal data, local configuration and generated artifacts never enter Git.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+history.json
+recordings/
+transcripts/
+*.m4a
+*.mp3
+*.flac
+*.caf
+*.aac
+*.mp4
+*.mov
+build/
+dist/
+*.app/
+# Generated synthetic transcripts and UI state are reproducible, not source.
+tests/results.json
+# Local internal documents and obsolete one-off migration helpers are not exported.
+PROJECT-CONTEXT.md
+scripts/redesign.py
+scripts/refine_shortcuts.py
+scripts/update_bucky.py
